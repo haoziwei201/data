@@ -1,0 +1,14 @@
+# Python 运行缓存
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# 实验报告生成（不入库：脚本、参照样例与图表缓存）
+generate_report.py
+generate_report_example.py
+output_report/
+
+# 本地环境与编辑器
+.vscode/
+.idea/
+*.log

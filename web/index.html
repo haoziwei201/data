@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>问卷系统 · 登录</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="container" style="max-width: 420px; margin-top: 60px;">
+  <div style="text-align:center; margin-bottom: 20px;">
+    <div style="font-size:26px; font-weight:700; color:var(--primary);">简易问卷系统</div>
+    <div class="muted">基于 MongoDB · 第一阶段</div>
+  </div>
+  <div class="tabs">
+    <button id="tab-login" class="active" onclick="switchTab('login')">登录</button>
+    <button id="tab-reg" onclick="switchTab('reg')">注册</button>
+  </div>
+  <div class="card">
+    <div id="err" class="error-box"></div>
+    <label class="field">用户名
+      <input type="text" id="username" maxlength="32" placeholder="2~32 个字符">
+    </label>
+    <label class="field">密码
+      <input type="password" id="password" placeholder="至少 6 位">
+    </label>
+    <label class="field" id="password2-row" style="display:none;">确认密码
+      <input type="password" id="password2" placeholder="再次输入密码">
+    </label>
+    <button id="submit-btn" style="width:100%;" onclick="doSubmit()">登录</button>
+  </div>
+</div>
+<script src="/common.js"></script>
+<script>
+let mode = "login";
+
+// 从问卷链接跳来登录时携带 ?next=<问卷地址>：登录/注册成功后自动回到该问卷
+const nextParam = new URLSearchParams(location.search).get("next");
+if (nextParam) {
+  localStorage.setItem("next", nextParam);
+  history.replaceState(null, "", "/");
+}
+
+// 已登录则直接进入
+(async () => {
+  if (localStorage.getItem("token")) {
+    try { await api("/api/me"); goNext(); return; } catch (e) { /* 令牌失效则停留 */ }
+  }
+})();
+
+function switchTab(m) {
+  mode = m;
+  document.getElementById("tab-login").className = m === "login" ? "active" : "";
+  document.getElementById("tab-reg").className = m === "reg" ? "active" : "";
+  document.getElementById("password2-row").style.display = m === "reg" ? "block" : "none";
+  document.getElementById("submit-btn").textContent = m === "login" ? "登录" : "注册";
+  document.getElementById("err").style.display = "none";
+}
+
+function goNext() {
+  const next = localStorage.getItem("next");
+  if (next) { localStorage.removeItem("next"); location = next; }
+  else location = "/my.html";
+}
+
+async function doSubmit() {
+  const username = document.getElementById("username").value.trim();
+  const password = document.getElementById("password").value;
+  if (!username || !password) return showMsg("err", "请输入用户名和密码");
+  if (mode === "reg") {
+    const p2 = document.getElementById("password2").value;
+    if (p2 !== password) return showMsg("err", "两次输入的密码不一致");
+  }
+  try {
+    const data = await api("/api/" + (mode === "login" ? "login" : "register"), {
+      method: "POST",
+      body: { username, password },
+    });
+    localStorage.setItem("token", data.token);
+    localStorage.setItem("username", data.user.username);
+    goNext();
+  } catch (e) {
+    showMsg("err", e.message);
+  }
+}
+
+document.getElementById("password").addEventListener("keydown", ev => {
+  if (ev.key === "Enter") doSubmit();
+});
+</script>
+</body>
+</html>

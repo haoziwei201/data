@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>填写问卷</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="container" style="max-width: 640px;">
+  <div id="err" class="error-box"></div>
+
+  <div id="screen-welcome" style="display:none;">
+    <div class="card">
+      <div class="fill-title" id="f-title"></div>
+      <div class="fill-desc" id="f-desc"></div>
+      <div class="muted" id="f-meta"></div>
+      <div style="margin-top:16px;"><button onclick="startFill()">开始填写</button></div>
+    </div>
+  </div>
+
+  <div id="screen-question" style="display:none;">
+    <div class="card">
+      <div class="progress" id="f-progress"></div>
+      <div class="fill-title" style="font-size:18px;" id="q-title"></div>
+      <div class="muted" id="q-hint" style="margin-bottom:14px;"></div>
+      <div id="q-body"></div>
+      <div class="nav-row">
+        <button class="ghost" id="btn-prev" onclick="goPrev()">← 上一题</button>
+        <button id="btn-next" onclick="goNext()">下一题 →</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="screen-finish" style="display:none;">
+    <div class="card">
+      <div class="fill-title">即将提交</div>
+      <div class="muted" id="fin-summary" style="margin-bottom:16px;"></div>
+      <div id="fin-err" class="error-box"></div>
+      <button onclick="doSubmit()">提交答卷</button>
+    </div>
+  </div>
+
+  <div id="screen-done" style="display:none;">
+    <div class="card" style="text-align:center; padding:40px;">
+      <div style="font-size:40px;">✅</div>
+      <div class="fill-title">提交成功，感谢您的参与！</div>
+      <div style="margin-top:14px;"><a class="btn" href="/">返回首页</a></div>
+    </div>
+  </div>
+</div>
+<script src="/common.js"></script>
+<script>
+const slug = new URLSearchParams(location.search).get("slug");
+let info = null, current = null, totalQ = 0;
+let answers = {};   // {qid: value}
+let history = [];   // 已答过的题目 id 栈（用于“上一题”）
+let cache = {};     // 见过的题目对象缓存
+
+(async function init() {
+  try {
+    info = await api(`/api/fill/${slug}`);
+  } catch (e) {
+    if (e.status === 401) {
+      const box = document.getElementById("err");
+      box.style.display = "block";
+      box.innerHTML = `该问卷需要登录后填写。
+        <div style="margin-top:10px;">
+          <a class="btn" href="/?next=${encodeURIComponent(location.href)}">去登录 / 注册</a>
+          <span class="muted" style="margin-left:10px;">登录或注册后将自动返回本问卷</span>
+        </div>`;
+    } else showMsg("err", e.message);
+    return;
+  }
+  totalQ = info.questionCount;
+  document.getElementById("f-title").textContent = info.survey.title;
+  document.getElementById("f-desc").textContent = info.survey.description || "";
+  const bits = [];
+  if (info.survey.deadline) bits.push("截止时间：" + fmtTime(info.survey.deadline));
+  bits.push(info.survey.allowAnonymous ? "支持匿名填写" : "需登录填写");
+  document.getElementById("f-meta").textContent = bits.join(" · ");
+  document.getElementById("screen-welcome").style.display = "block";
+})();
+
+function show(id) {
+  for (const s of ["screen-welcome", "screen-question", "screen-finish", "screen-done"])
+    document.getElementById(s).style.display = "none";
+  document.getElementById(id).style.display = "block";
+}
+
+async function startFill() {
+  try {
+    const r = await step(answers);
+    if (r.done) return showFinish();
+    current = r.question;
+    renderQuestion();
+    show("screen-question");
+  } catch (e) { showMsg("err", e.message); }
+}
+
+async function step(ans) {
+  return api(`/api/fill/${slug}/step`, { method: "POST", body: { answers: ans } });
+}
+
+function renderQuestion() {
+  const q = current;
+  cache[q.id] = q;
+  document.getElementById("f-progress").textContent = `第 ${q.order} / ${totalQ} 题`;
+  document.getElementById("q-title").textContent = q.title + (q.required ? " *" : "");
+  const hints = [];
+  if (q.type === "multi_choice") {
+    const c = q.config || {};
+    if (c.minSelect && c.maxSelect && c.minSelect === c.maxSelect) hints.push(`必须选择 ${c.minSelect} 项`);
+    else { if (c.minSelect) hints.push(`至少选择 ${c.minSelect} 项`); if (c.maxSelect) hints.push(`最多选择 ${c.maxSelect} 项`); }
+  }
+  if (q.type === "text") {
+    const c = q.config || {};
+    if (c.minLength != null) hints.push(`最少 ${c.minLength} 字`);
+    if (c.maxLength != null) hints.push(`最多 ${c.maxLength} 字`);
+  }
+  if (q.type === "number") {
+    const c = q.config || {};
+    const range = (c.min != null || c.max != null)
+      ? `取值范围 ${c.min ?? "-∞"} ~ ${c.max ?? "+∞"}` : null;
+    if (range) hints.push(range);
+    if (c.integer) hints.push("必须是整数");
+  }
+  if (q.required) hints.unshift("必答题");
+  document.getElementById("q-hint").textContent = hints.join(" · ");
+
+  const body = document.getElementById("q-body");
+  body.innerHTML = "";
+  const val = answers[q.id];
+  if (q.type === "single_choice") {
+    for (const o of q.options) {
+      body.innerHTML += `
+        <label class="choice-item">
+          <input type="radio" name="opt" value="${esc(o.key)}" ${val === o.key ? "checked" : ""}>
+          ${esc(o.text)}
+        </label>`;
+    }
+  } else if (q.type === "multi_choice") {
+    for (const o of q.options) {
+      const checked = Array.isArray(val) && val.includes(o.key) ? "checked" : "";
+      body.innerHTML += `
+        <label class="choice-item">
+          <input type="checkbox" name="opt" value="${esc(o.key)}" ${checked}>
+          ${esc(o.text)}
+        </label>`;
+    }
+  } else if (q.type === "text") {
+    body.innerHTML = `<textarea id="t-answer" rows="4" style="width:100%;padding:10px;font-size:15px;">${esc(val || "")}</textarea>`;
+  } else if (q.type === "number") {
+    const c = q.config || {};
+    body.innerHTML = `<input type="number" id="t-answer" step="${c.integer ? "1" : "any"}" value="${val ?? ""}"
+      style="width:200px;padding:10px;font-size:15px;">`;
+  }
+  document.getElementById("btn-prev").disabled = history.length === 0;
+}
+
+function collectValue(q) {
+  if (q.type === "single_choice") {
+    const el = document.querySelector('input[name=opt]:checked');
+    return el ? el.value : null;
+  }
+  if (q.type === "multi_choice") {
+    return [...document.querySelectorAll('input[name=opt]:checked')].map(x => x.value);
+  }
+  const el = document.getElementById("t-answer");
+  if (!el) return null;
+  if (q.type === "text") return el.value.trim() || null;
+  return el.value === "" ? null : Number(el.value);
+}
+
+async function goNext() {
+  const q = current;
+  const v = collectValue(q);
+  if ((v === null || (Array.isArray(v) && !v.length))) {
+    if (q.required) return showMsg("err", "本题必答，请作答后继续");
+    delete answers[q.id]; // 非必答且未作答：视为跳过
+  } else {
+    answers[q.id] = v;
+  }
+  history.push(q.id);
+  try {
+    const r = await step(answers);
+    if (r.done) return showFinish();
+    current = r.question;
+    renderQuestion();
+  } catch (e) { showMsg("err", e.message); }
+}
+
+function goPrev() {
+  const qid = history.pop();
+  if (!qid) return;
+  current = cache[qid];
+  renderQuestion();
+}
+
+function showFinish() {
+  const n = Object.keys(answers).length;
+  document.getElementById("fin-summary").textContent = `共回答 ${n} 道题。提交后答卷将被保存。`;
+  show("screen-finish");
+}
+
+async function doSubmit() {
+  try {
+    await api(`/api/fill/${slug}/submit`, { method: "POST", body: { answers } });
+    show("screen-done");
+  } catch (e) {
+    const el = document.getElementById("fin-err");
+    el.textContent = e.message;
+    el.style.display = "block";
+  }
+}
+</script>
+</body>
+</html>

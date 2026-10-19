@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>我的问卷</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="topbar">
+  <span class="brand">简易问卷系统</span>
+  <span class="who"><span id="who"></span> · <a href="#" onclick="logout();return false;">退出</a></span>
+</div>
+<div class="container">
+  <div id="err" class="error-box"></div>
+
+  <details class="card" id="create-box">
+    <summary style="cursor:pointer; font-weight:600;">＋ 创建新问卷</summary>
+    <div style="margin-top:14px;">
+      <label class="field">问卷标题 <input type="text" id="n-title" maxlength="100" placeholder="例如：大学生生活习惯调查"></label>
+      <label class="field">问卷说明 <textarea id="n-desc" rows="2" placeholder="选填，展示在填写页顶部"></textarea></label>
+      <label class="field">截止时间 <input type="datetime-local" id="n-deadline"></label>
+      <span class="inline"><label class="inline"><input type="checkbox" id="n-anon"> 允许匿名填写（不勾选则必须登录后填写）</label></span>
+      <span class="inline"><label class="inline"><input type="checkbox" id="n-multi"> 允许同一人多次填写</label></span>
+      <div style="margin-top:10px;"><button onclick="createSurvey()">创建（草稿）</button></div>
+    </div>
+  </details>
+
+  <div class="card">
+    <h2>我的问卷</h2>
+    <table class="list">
+      <thead><tr><th>标题</th><th>状态</th><th>截止时间</th><th>答卷数</th><th>操作</th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+</div>
+<script src="/common.js"></script>
+<script>
+const who = localStorage.getItem("username");
+if (!localStorage.getItem("token")) location = "/";
+document.getElementById("who").textContent = who || "";
+
+const STATUS_LABEL = { draft: ["草稿", "gray"], published: ["收集中", "green"], paused: ["已暂停", "amber"], closed: ["已关闭", "red"] };
+let SURVEYS = [];
+
+async function load() {
+  try {
+    const data = await api("/api/my/surveys");
+    SURVEYS = data.surveys;
+    const tb = document.getElementById("tbody");
+    tb.innerHTML = "";
+    if (!data.surveys.length) {
+      tb.innerHTML = '<tr><td colspan="5" class="muted">还没有问卷，点击上方“创建新问卷”开始。</td></tr>';
+      return;
+    }
+    for (const s of data.surveys) {
+      const [label, cls] = STATUS_LABEL[s.status] || [s.status, "gray"];
+      const share = s.status !== "draft"
+        ? `<button class="small ghost" onclick="copyLink('${esc(s.slug)}', this)">复制链接</button>` : "";
+      const publish = s.status === "draft"
+        ? `<button class="small" onclick="publish('${s.id}')">发布</button>` : "";
+      const pause = s.status === "published"
+        ? `<button class="small ghost" onclick="pauseSurvey('${s.id}')">暂停</button>` : "";
+      const resume = s.status === "paused"
+        ? `<button class="small" onclick="resumeSurvey('${s.id}')">继续收集</button>` : "";
+      const close = s.status === "published" || s.status === "paused"
+        ? `<button class="small danger" onclick="closeSurvey('${s.id}')">关闭</button>` : "";
+      const delBtn = `<button class="small danger ghost" onclick="delSurvey('${s.id}')">删除</button>`;
+      const stats = s.status !== "draft"
+        ? `<button class="small ghost" onclick="location='/stats.html?survey=${s.id}'">统计</button>` : "";
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td><a href="/edit.html?survey=${s.id}">${esc(s.title)}</a></td>
+        <td><span class="badge ${cls}">${label}</span></td>
+        <td>${fmtTime(s.deadline)}</td>
+        <td>${s.responseCount}</td>
+        <td style="white-space:nowrap;">
+          <button class="small ghost" onclick="location='/edit.html?survey=${s.id}'">编辑</button>
+          ${stats}${publish}${pause}${resume}${close}${delBtn}${share}
+        </td>`;
+      tb.appendChild(tr);
+    }
+  } catch (e) {
+    if (e.status === 401) { localStorage.setItem("next", location.href); location = "/"; }
+    else showMsg("err", e.message);
+  }
+}
+
+async function createSurvey() {
+  try {
+    const body = {
+      title: document.getElementById("n-title").value,
+      description: document.getElementById("n-desc").value,
+      deadline: document.getElementById("n-deadline").value || null,
+      allowAnonymous: document.getElementById("n-anon").checked,
+      allowMultipleSubmissions: document.getElementById("n-multi").checked,
+    };
+    const data = await api("/api/surveys", { method: "POST", body });
+    location = "/edit.html?survey=" + data.survey.id;
+  } catch (e) { showMsg("err", e.message); }
+}
+
+async function publish(id) {
+  if (!confirm("发布后填写者即可通过链接填写；如需修改题目可随时「暂停收集」。确定发布？")) return;
+  try {
+    const r = await api(`/api/surveys/${id}/publish`, { method: "POST" });
+    load();
+    prompt("发布成功！问卷填写链接：", location.origin + r.shareUrl);
+  } catch (e) { showMsg("err", e.message); }
+}
+
+async function pauseSurvey(id) {
+  if (!confirm("暂停后问卷暂时无法填写，题目可编辑；之后可随时「继续收集」。确定暂停？")) return;
+  try {
+    await api(`/api/surveys/${id}/pause`, { method: "POST" });
+    load();
+  } catch (e) { showMsg("err", e.message); }
+}
+
+async function resumeSurvey(id) {
+  try {
+    await api(`/api/surveys/${id}/resume`, { method: "POST" });
+    load();
+  } catch (e) { showMsg("err", e.message); }
+}
+
+async function closeSurvey(id) {
+  if (!confirm("关闭后问卷将永久停止收集（不可重开），已有答卷保留。确定关闭？")) return;
+  try {
+    await api(`/api/surveys/${id}/close`, { method: "POST" });
+    load();
+  } catch (e) { showMsg("err", e.message); }
+}
+
+async function delSurvey(id) {
+  const s = SURVEYS.find(x => x.id === id);
+  if (!s) return;
+  const msg = `永久删除问卷「${s.title}」？\n\n其全部题目与 ${s.responseCount} 份答卷将一并删除，删除后不可恢复。`;
+  if (!confirm(msg)) return;
+  try {
+    const r = await api(`/api/surveys/${id}`, { method: "DELETE" });
+    showMsg("err", `已删除：清除 ${r.questionsRemoved} 道题目、${r.responsesRemoved} 份答卷。`, true);
+    load();
+  } catch (e) { showMsg("err", e.message); }
+}
+
+function copyLink(slug, btn) {
+  const url = location.origin + "/survey/" + slug;
+  if (navigator.clipboard) navigator.clipboard.writeText(url);
+  prompt("问卷填写链接（已尝试复制到剪贴板）：", url);
+}
+
+load();
+</script>
+</body>
+</html>

@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>统计结果</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="topbar">
+  <span class="brand"><a href="/my.html" style="color:inherit;text-decoration:none;">← 返回</a></span>
+  <span class="who" id="status-badge"></span>
+</div>
+<div class="container">
+  <div id="err" class="error-box"></div>
+  <div class="card" id="summary" style="display:none;">
+    <h2 id="s-title"></h2>
+    <div class="muted" id="s-meta"></div>
+  </div>
+  <div id="stats-body"></div>
+</div>
+<script src="/common.js"></script>
+<script>
+if (!localStorage.getItem("token")) location = "/";
+const surveyId = new URLSearchParams(location.search).get("survey");
+
+(async function load() {
+  let survey;
+  try {
+    const detail = await api(`/api/surveys/${surveyId}`);
+    survey = detail.survey;
+    const data = await api(`/api/surveys/${surveyId}/stats`);
+    document.getElementById("s-title").textContent = survey.title;
+    document.getElementById("s-meta").textContent =
+      `状态：${{ draft: "草稿", published: "发布中", closed: "已关闭" }[survey.status]}` +
+      ` · 填写链接：/survey/${survey.slug}`;
+    document.getElementById("summary").style.display = "block";
+
+    const box = document.getElementById("stats-body");
+    if (!data.questions.length) {
+      box.innerHTML = '<div class="card muted">该问卷还没有题目。</div>';
+      return;
+    }
+    for (const q of data.questions) {
+      const card = document.createElement("div");
+      card.className = "card";
+      let inner = `
+        <div class="qhead" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+          <span class="muted">第${q.order}题</span>
+          <span class="qtitle" style="font-weight:600;">${esc(q.title)}</span>
+          <span class="badge gray">${TYPE_LABELS[q.type]}</span>
+          ${q.deleted ? '<span class="badge red">已删除</span>' : ""}
+          <span class="muted" style="margin-left:auto;">${q.answerCount} 人回答</span>
+        </div>`;
+      const total = q.answerCount || 0;
+      if (q.options) {
+        for (const o of q.options) {
+          const pct = total ? Math.round(o.count / total * 100) : 0;
+          inner += `
+            <div class="stat-row">
+              <span class="txt">${esc(o.text)}</span>
+              <div class="stat-bar-bg"><div class="stat-bar" style="width:${pct}%"></div></div>
+              <span class="num">${o.count} 票 · ${pct}%</span>
+            </div>`;
+        }
+      } else if (q.type === "number") {
+        if (q.average != null) {
+          inner += `<div class="chips" style="margin-bottom:10px;">
+            <span class="chip">平均 ${q.average}</span>
+            <span class="chip">最小 ${q.min}</span>
+            <span class="chip">最大 ${q.max}</span>
+          </div>`;
+        } else {
+          inner += '<div class="muted" style="margin-bottom:8px;">暂无有效数字答案</div>';
+        }
+        inner += `<div class="chips">${(q.values || []).map(v => `<span class="chip">${esc(v)}</span>`).join("")}</div>`;
+      } else {
+        const vals = q.values || [];
+        inner += vals.length
+          ? `<div>${vals.map(v => `<div class="muted" style="padding:4px 0;border-bottom:1px dashed var(--border);">• ${esc(v)}</div>`).join("")}</div>`
+          : '<div class="muted">暂无回答</div>';
+      }
+      card.innerHTML = inner;
+      box.appendChild(card);
+    }
+  } catch (e) {
+    if (e.status === 401) { localStorage.setItem("next", location.href); location = "/"; }
+    else showMsg("err", e.message);
+  }
+})();
+</script>
+</body>
+</html>
