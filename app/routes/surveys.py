@@ -115,7 +115,19 @@ def my_surveys():
 @login_required
 def survey_detail(sid):
     s = get_owned_survey(sid)
-    qs = list(get_db().questions.find({"surveyId": s["_id"]}).sort("order", 1))
+    db = get_db()
+    qs = list(db.questions.find({"surveyId": s["_id"]}).sort("order", 1))
+    # 已入库题目附带题库版本信息：前端据此渲染「切换版本」下拉（v1..vN）
+    root_ids = [q["rootId"] for q in qs if q.get("rootId")]
+    bank_ver = {}
+    if root_ids:
+        for b in db.question_bank.find({"_id": {"$in": root_ids}},
+                                       {"currentVersion": 1, "versions": 1}):
+            bank_ver[b["_id"]] = (b["currentVersion"], len(b.get("versions", [])))
+    for q in qs:
+        info = bank_ver.get(q.get("rootId"))
+        if info:
+            q["bankCurrentVersion"], q["bankTotalVersions"] = info
     out = to_json(s)
     out["shareUrl"] = f"/survey/{s['slug']}" if s["status"] != "draft" else None
     return jsonify({"survey": out, "questions": to_json(qs)})
@@ -215,9 +227,11 @@ def close_survey(sid):
 def delete_survey(sid):
     """删除问卷（聚合根级联硬删除）。
 
-    题目与答卷只被所属问卷引用，整卷删除不会产生悬空引用；
+    题目实例与答卷只被所属问卷引用，整卷删除不会产生悬空引用；
     与"单题软删除"并不矛盾——那是保护仍在收集的问卷的历史，
     这里是问卷整体下线、统计数据也不再需要的场景。任何状态均可删除。
+    第二阶段：题目身份（题库资产）独立于问卷存续，不随问卷删除
+    ——用户历史上创建过的题仍在题库中可复用（详见设计文档 D13）。
     """
     s = get_owned_survey(sid)
     db = get_db()

@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>题目跨问卷统计</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="topbar">
+  <span class="brand"><a href="/question.html" id="back" style="color:inherit;text-decoration:none;">← 题目详情</a></span>
+  <span class="who"><span id="who"></span> · <a href="#" onclick="logout();return false;">退出</a></span>
+</div>
+<div class="container">
+  <div id="err" class="error-box"></div>
+  <div id="content"></div>
+</div>
+<script src="/common.js"></script>
+<script>
+if (!localStorage.getItem("token")) location = "/";
+document.getElementById("who").textContent = localStorage.getItem("username") || "";
+const qid = new URLSearchParams(location.search).get("id");
+document.getElementById("back").href = "/question.html?id=" + encodeURIComponent(qid || "");
+
+function bar(pct) {
+  return `<div class="stat-bar"><div class="stat-bar-bg" style="width:${Math.min(100, pct)}%"></div></div>`;
+}
+
+function answerHtml(q, a) {
+  if (!a) return '<div class="muted">该题还没有任何回答。</div>';
+  let html = `<div class="muted" style="margin-bottom:6px;">共 ${a.answerCount} 次回答</div>`;
+  if (a.options) {
+    const total = a.options.reduce((s, o) => s + o.count, 0) || 1;
+    for (const o of a.options) {
+      const pct = Math.round(o.count / total * 100);
+      html += `<div class="stat-row"><span>${esc(o.text)}</span>
+        ${bar(pct)}<span>${o.count}（${pct}%）</span></div>`;
+    }
+  } else if (a.values) {
+    if (q.type === "number") {
+      html += `<div class="stat-row"><span>平均 ${a.average ?? "—"} · 最小 ${a.min ?? "—"} · 最大 ${a.max ?? "—"}</span></div>`;
+    }
+    html += "<h3>全部回答</h3>";
+    html += a.values.length
+      ? a.values.map(v => `<div class="qcard" style="padding:6px 10px;">${esc(v)}</div>`).join("")
+      : '<div class="muted">暂无内容</div>';
+  }
+  return html;
+}
+
+async function load() {
+  try {
+    const data = await api(`/api/bank/questions/${qid}/stats`);
+    const q = data.question;
+    let html = `
+      <div class="card">
+        <h2>${esc(q.title)} <span class="badge gray">${TYPE_LABELS[q.type] || q.type}</span>
+          <span class="badge green">当前 v${q.currentVersion}</span></h2>
+        <div class="muted">这道题在 ${data.surveys.length} 份问卷中使用；以下为所有问卷中的总体回答情况。</div>
+      </div>
+
+      <div class="card">
+        <h2>总体分布（全部问卷合计）</h2>
+        ${answerHtml(q, data.answers)}
+      </div>
+
+      <div class="card">
+        <h2>按问卷分解</h2>`;
+    if (!data.perSurvey.length) {
+      html += '<div class="muted">还没有问卷收集到该题的回答。</div>';
+    } else {
+      for (const p of data.perSurvey) {
+        html += `<h3>${esc(p.surveyTitle)}</h3>${answerHtml(q, p.answers)}`;
+      }
+    }
+    html += "</div>";
+    document.getElementById("content").innerHTML = html;
+  } catch (e) {
+    if (e.status === 401) location = "/";
+    else showMsg("err", e.message);
+  }
+}
+
+load();
+</script>
+</body>
+</html>

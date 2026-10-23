@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>题库</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="topbar">
+  <span class="brand"><a href="/my.html" style="color:inherit;text-decoration:none;">← 我的问卷</a></span>
+  <span class="who"><span id="who"></span> · <a href="#" onclick="logout();return false;">退出</a></span>
+</div>
+<div class="container">
+  <div id="err" class="error-box"></div>
+
+  <details class="card" id="create-box">
+    <summary style="cursor:pointer; font-weight:600;">＋ 新建题目（保存到题库，供以后问卷使用）</summary>
+    <div style="margin-top:14px;" id="bank-form"></div>
+  </details>
+
+  <div class="card">
+    <div class="tabs" style="margin-bottom:12px;">
+      <button id="tab-mine" onclick="switchTab('mine')">我的题库</button>
+      <button id="tab-shared" onclick="switchTab('shared')">共享给我的</button>
+    </div>
+    <table class="list">
+      <thead><tr><th>题目</th><th>题型</th><th>版本</th><th>共享</th><th>操作</th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+</div>
+<script src="/common.js"></script>
+<script src="/bank-form.js"></script>
+<script>
+if (!localStorage.getItem("token")) location = "/";
+document.getElementById("who").textContent = localStorage.getItem("username") || "";
+
+let scope = "mine";
+mountBankForm({ onCreated: load });
+
+function switchTab(s) {
+  scope = s;
+  document.getElementById("tab-mine").style.fontWeight = s === "mine" ? "700" : "400";
+  document.getElementById("tab-shared").style.fontWeight = s === "shared" ? "700" : "400";
+  load();
+}
+
+async function load() {
+  try {
+    const data = await api(`/api/bank/questions?scope=${scope}`);
+    const tb = document.getElementById("tbody");
+    tb.innerHTML = "";
+    if (!data.questions.length) {
+      tb.innerHTML = `<tr><td colspan="5" class="muted">${scope === "mine"
+        ? "题库还是空的：可以新建题目，问卷里创建的题目也会自动进入题库。"
+        : "还没有题目共享给你。同事在题目详情页共享后，这里就能看到。"}</td></tr>`;
+      return;
+    }
+    for (const q of data.questions) {
+      const tr = document.createElement("tr");
+      const shareInfo = q.mine
+        ? (q.sharedWithCount ? `已共享 ${q.sharedWithCount} 人` : "未共享")
+        : `来自 ${esc(q.ownerName || "?")}`;
+      const ops = q.mine
+        ? `<button class="small danger ghost" onclick="delQuestion('${q.id}')">从题库移除</button>` : "";
+      tr.innerHTML = `
+        <td><a href="/question.html?id=${q.id}">${esc(q.title)}</a></td>
+        <td>${TYPE_LABELS[q.type] || q.type}${q.required ? " · 必答" : ""}</td>
+        <td>v${q.currentVersion}（共 ${q.totalVersions} 版）</td>
+        <td class="muted">${shareInfo}</td>
+        <td style="white-space:nowrap;">
+          <button class="small ghost" onclick="location='/question.html?id=${q.id}'">详情 / 版本 / 统计</button>${ops}
+        </td>`;
+      tb.appendChild(tr);
+    }
+  } catch (e) {
+    if (e.status === 401) location = "/";
+    else showMsg("err", e.message);
+  }
+}
+
+async function delQuestion(id) {
+  if (!confirm("从题库移除后，题库与共享中将不再显示该题；已放入问卷的题目不受影响。确定移除？")) return;
+  try { await api(`/api/bank/questions/${id}`, { method: "DELETE" }); load(); }
+  catch (e) { showMsg("err", e.message); }
+}
+
+switchTab("mine");
+</script>
+</body>
+</html>

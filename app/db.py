@@ -25,7 +25,12 @@ def ensure_indexes():
         [("ownerId", ASCENDING), ("status", ASCENDING), ("createdAt", -1)]
     )
     db.questions.create_index([("surveyId", ASCENDING), ("order", ASCENDING)])
+    # 第二阶段：按题目身份反查使用情况（需求六）、跨问卷统计（需求八）
+    db.questions.create_index([("rootId", ASCENDING)])
     db.responses.create_index([("surveyId", ASCENDING), ("submittedAt", -1)])
     db.responses.create_index(
         [("surveyId", ASCENDING), ("respondent.userId", ASCENDING)]
     )
+    # 第二阶段：题库（题目资产）——我的题库 / 共享给我的
+    db.question_bank.create_index([("ownerId", ASCENDING), ("deleted", ASCENDING)])
+    db.question_bank.create_index([("sharedWith", ASCENDING)])

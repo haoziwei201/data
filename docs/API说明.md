@@ -67,6 +67,9 @@ draft（草稿）──发布──▶ published（收集中）◀──继续�
 ### GET /api/surveys/{id} — 问卷详情（含全部题目）
 
 成功：`{ "survey": { ... }, "questions": [ ... ] }`
+题目字段含血统信息：`rootId`（null=未入库）、`bankVersion`（当前使用的题库版本）、
+已入库题目额外带 `bankCurrentVersion`（题库最新版）与 `bankTotalVersions`（版本总数，
+供前端渲染「切换版本」下拉）。
 
 ### PATCH /api/surveys/{id} — 修改基本信息
 
@@ -149,10 +152,17 @@ body 中出现哪个字段就改哪个：`title` / `description` / `allowAnonymo
 
 `config` 内所有字段均可省略（= 不限制）。成功（201）：`{ "question": { "id": "...", "order": 1, ... } }`
 
+第二阶段调整：建题**不自动加入题库**（返回的 `rootId` / `bankVersion` 为 null）；
+需要复用时在编辑页对该题「存入题库」（见下），题目行同时显示"未入库"标记。
+
 ### PATCH /api/questions/{qid} — 编辑题目
 
 可改 `title` / `required` / `options` / `config` / `jumpRules`（未传的字段保持不变）。
 不可改 `type`（409）。修改会整体重新校验。
+
+第二阶段起编辑语义随问卷状态分流（详见 §3.5）：草稿且无答卷 → 原地更新；
+已发布过或有答卷 → 返回的新实例接管题位（`question.id` 变化，`basedOn`
+指向旧实例），旧实例软删退役、内容保持答题时原样。
 
 ### DELETE /api/questions/{qid} — 删除题目（软删除）
 
@@ -177,11 +187,117 @@ body 为空或 `{"template": "demo"}`：导入内置测试模板（4 道题：�
 
 - 题目**追加**到当前问卷末尾（order 续接），不覆盖已有题目；
 - 跳转规则的目标题目 id 自动**重映射**到新导入的题目（"end" 保持不变）；
+- 第二阶段：来源题目**已入库**时导入会复用其题目身份（使用情况统计跨卷可见，
+  同一身份在本卷已存在则跳过该题，响应含 `skipped` 计数）；未入库的来源题按
+  普通内容复制（不自动入库，与建题口径一致，重复导入不去重）；
 - 仅草稿/已暂停状态可用（收集中返回 409）。
 
-成功（201）：`{ "imported": 4, "questions": [ ...新题目... ] }`
+成功（201）：`{ "imported": 4, "skipped": 0, "questions": [ ...新题目... ] }`
 
-## 4. 跳转规则（jumpRules 字段格式）
+### POST /api/surveys/{sid}/questions/from-bank — 从题库选题入卷（第二阶段）
+
+```json
+{ "rootId": "6ad3...", "version": 2 }
+```
+
+`version` 可省（默认题库当前最新版）；**可在 v1~vN 中任选版本**（需求五：多版本共存）。
+可用范围 = 自己的题库 + 共享给我的题目（其他人题目返回 403）。同一题目身份在同一
+问卷内只能有一个活跃实例（重复加入返回 409）。入卷实例保存所选版本的内容快照，
+跳转规则从空开始配置。成功（201）：`{ "question": { ...含 rootId / bankVersion... } }`
+
+### POST /api/surveys/{sid}/questions/{qid}/upgrade — 切换到题库指定版本
+
+```json
+{ "version": 1 }
+```
+
+`version` 可省（默认最新版）。把问卷内题目换绑到其身份的任意历史版本：
+草稿问卷原地更新内容；已发布过或已有答卷的问卷自动走**分叉**（旧实例退役保留，
+历史答卷不受影响）。未入库题目返回 409（提示先存入题库）；已在用版本返回 409；
+版本不存在返回 404。成功：`{ "question": { ... }, "upgradedTo": 1 }`
+
+### POST /api/surveys/{sid}/questions/{qid}/save-to-bank — 存入题库
+
+把问卷内题目的当前内容存入题库（需求一：用户自行决定入库），两种情况：
+- **未入库题目**（建题的默认形态）：为当前用户创建题目身份，实例内容即 v1，
+  实例换绑到该身份。成功：`{ "savedVersion": 1, "rootId": "..." }`
+- **已入库题目**：当前内容追加为新版本（仅身份所有者可用，共享使用者返回 403）。
+  成功：`{ "savedVersion": 2, "rootId": "..." }`
+
+## 3.5 题目编辑语义（第二阶段变更）
+
+`PATCH /api/questions/{qid}` 仍是编辑问卷内题目的入口，但语义升级为：
+
+- 草稿问卷且尚无答卷 → **原地更新**（与第一阶段一致）；
+- 已发布过（即使暂停中）或已有答卷 → **copy-on-write 分叉**：返回的
+  `question.id` 是新实例，旧实例软删退役（内容保持答题时原样），同卷其他
+  题目的跳转目标自动改指新实例。统计中两代答卷按同一道题归并。
+
+这是第二阶段需求三（"修改题目时不要影响已经做好的问卷"）的直接落地，
+取代了第一阶段"暂停后原地改题"的行为。
+
+## 4. 题库（第二阶段新增，均需登录）
+
+### POST /api/bank/questions — 题库新建题目
+
+body 为题目内容（type/title/required/options/config，不含跳转规则）。
+成功（201）：`{ "question": { "id": "身份id", "currentVersion": 1, ... } }`
+
+### GET /api/bank/questions?scope=mine|shared — 题库列表
+
+`mine`（默认）：我的题库；`shared`：共享给我的（含 `ownerName`）。
+行内含 `currentVersion / totalVersions / sharedWithCount / mine` 与当前版本内容摘要。
+
+### GET /api/bank/questions/{rootId} — 题目详情
+
+所有者与被共享者可读。返回版本链（`versions[]`：version/basedOn/createdAt/content）、
+共享名单（`sharedWith[]`）与使用情况（`usage[]`）。
+
+### PATCH /api/bank/questions/{rootId} — 编辑（生成新版本）—
+
+仅所有者。body 传要修改的字段（title/required/options/config），基于当前版本
+合并后**追加为新版本**，历史版本不变。改题型返回 409。成功：`{ "version": 2 }`
+
+### POST /api/bank/questions/{rootId}/restore — 恢复旧版本
+
+```json
+{ "version": 1 }
+```
+
+以旧版内容创建新版本（basedOn=旧版本号），历史保持完整。
+成功：`{ "restoredFrom": 1, "version": 3 }`
+
+### POST /api/bank/questions/{rootId}/share — 共享 / unshare — 取消共享
+
+```json
+{ "username": "lisi" }
+```
+
+仅所有者。成功返回 `{ "sharedWith": ["lisi"] }`；用户不存在 404；共享给自己 400。
+
+### DELETE /api/bank/questions/{rootId} — 从题库移除
+
+身份软删：题库与共享中不再显示；已放入问卷的实例（内容快照）不受影响。
+
+### GET /api/bank/questions/{rootId}/usage — 被哪些问卷使用
+
+所有者与被共享者可查。按问卷归并：
+
+```json
+{ "usage": [ { "surveyId": "...", "surveyTitle": "大学生调查", "surveyStatusLabel": "收集中",
+  "surveyOwner": "zhangsan", "active": true, "versionsInUse": [1], "allVersions": [1, 2] } ] }
+```
+
+`active=false` 表示该卷已把这道题删除（历史实例仍在，allVersions 可见）。
+
+### GET /api/bank/questions/{rootId}/stats — 单题跨问卷统计
+
+所有者与被共享者可查。返回按题库当前版本内容展示的总体分布（`answers`）
+与按问卷分解（`perSurvey[].answers`），字段与整卷统计一致
+（options/values/average/min/max/answerCount），另有 `totalResponses`
+（涉及问卷的答卷总数）与 `surveys`（使用情况同 usage）。
+
+## 5. 跳转规则（jumpRules 字段格式）
 
 数组按序匹配，命中第一条即执行其 `goto`；都不命中则进入 order 下一题。
 `goto` 为目标题目 id 或 `"end"`（提前结束问卷）。
@@ -201,7 +317,7 @@ body 为空或 `{"template": "demo"}`：导入内置测试模板（4 道题：�
 - `number`：`op` ∈ eq/ne/gt/gte/lt/lte/between（between 用 min/max，其余用 value）
 - `always`：无条件
 
-## 5. 填写（发布中的问卷；未开匿名则需登录）
+## 6. 填写（发布中的问卷；未开匿名则需登录）
 
 ### GET /api/fill/{slug} — 打开问卷
 
@@ -232,7 +348,7 @@ body 同 step。服务端回放路径：路径上未答的必问题报 400；被
 不入库。成功（201）：`{ "responseId": "...", "submittedAt": "..." }`
 409：该用户已填写过且问卷不允许重复提交。
 
-## 6. 统计（需登录 + 仅问卷所有者）
+## 7. 统计（需登录 + 仅问卷所有者）
 
 ### GET /api/surveys/{id}/stats — 整卷统计（?questionId= 只看单题）
 
@@ -256,7 +372,13 @@ body 同 step。服务端回放路径：路径上未答的必问题报 400；被
 - 数字题：`average/min/max`（无答案时省略）+ `values` 全量
 - 文本题：`values` 全量列出
 
-## 7. 其他
+第二阶段：`questions[].id` 为该题在本卷的**锚点实例 id**（创建时返回的 id，
+历史答卷即存此 id）；统计按题目身份（rootId）归并——copy-on-write 分叉前后、
+删除后重新加入的同一道题，回答都合并到一行，被删选项计入"（已删除的选项）"。
+`?questionId=` 支持传锚点 id 或任一分叉实例 id。跨问卷的单题统计见 §4 的
+`GET /api/bank/questions/{rootId}/stats`。
+
+## 8. 其他
 
 - `GET /api/health`：健康检查，含数据库连通性
 - `GET /survey/{slug}`：作业要求的短链形式，302 跳转到填写页 `/fill.html?slug=...`

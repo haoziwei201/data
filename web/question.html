@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>题目详情</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="topbar">
+  <span class="brand"><a href="/bank.html" style="color:inherit;text-decoration:none;">← 题库</a></span>
+  <span class="who"><span id="who"></span> · <a href="#" onclick="logout();return false;">退出</a></span>
+</div>
+<div class="container">
+  <div id="err" class="error-box"></div>
+  <div id="content"></div>
+</div>
+<script src="/common.js"></script>
+<script src="/bank-form.js"></script>
+<script>
+if (!localStorage.getItem("token")) location = "/";
+document.getElementById("who").textContent = localStorage.getItem("username") || "";
+const qid = new URLSearchParams(location.search).get("id");
+
+function contentLine(c) {
+  const parts = [];
+  if (c.options) parts.push("选项：" + c.options.map(o => o.text).join(" / "));
+  const cfg = c.config || {};
+  if (c.type === "multi_choice") {
+    if (cfg.minSelect) parts.push("至少选" + cfg.minSelect + "项");
+    if (cfg.maxSelect) parts.push("最多选" + cfg.maxSelect + "项");
+  }
+  if (c.type === "text") {
+    if (cfg.minLength != null) parts.push("≥" + cfg.minLength + "字");
+    if (cfg.maxLength != null) parts.push("≤" + cfg.maxLength + "字");
+  }
+  if (c.type === "number") {
+    if (cfg.min != null) parts.push("≥" + cfg.min);
+    if (cfg.max != null) parts.push("≤" + cfg.max);
+    if (cfg.integer) parts.push("整数");
+  }
+  return parts.map(esc).join("，");
+}
+
+async function load() {
+  try {
+    const data = await api(`/api/bank/questions/${qid}`);
+    const q = data.question;
+    let html = `
+      <div class="card">
+        <h2>${esc(q.title)}
+          <span class="badge gray">${TYPE_LABELS[q.type] || q.type}</span>
+          ${q.required ? '<span class="badge amber">必答</span>' : ""}
+          <span class="badge green">当前 v${q.currentVersion}</span>
+        </h2>
+        <div class="muted">所有者：${esc(q.ownerName)}${q.mine ? "（我）" : ""}
+          · 共享给 ${q.sharedWith.length} 人${q.sharedWith.length ? "：" + q.sharedWith.map(u => esc(u.username)).join("、") : ""}</div>
+        <div style="margin-top:10px;">
+          ${q.mine ? `<button class="ghost" onclick="toggleEdit()">编辑（生成新版本）</button>
+          <button class="ghost" onclick="toggleShare()">共享管理</button>` : ""}
+          <button class="danger ghost" onclick="viewStats()">跨问卷统计</button>
+        </div>
+      </div>
+
+      <div class="card" id="edit-box" style="display:none;">
+        <h2>生成新版本</h2>
+        <div class="muted" style="margin-bottom:10px;">基于当前版本修改全部设置（标题/必答/选项/校验规则），保存后追加为新版本；被问卷使用的旧版本保持不变。</div>
+        <div id="bank-form"></div>
+      </div>
+
+      <div class="card" id="share-box" style="display:none;">
+        <h2>共享管理</h2>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+          <input type="text" id="s-username" placeholder="对方用户名" style="flex:1;min-width:180px;">
+          <button onclick="doShare()">共享</button>
+        </div>
+        <div id="share-list" style="margin-top:10px;"></div>
+      </div>
+
+      <div class="card">
+        <h2>版本历史（v1 → v${q.currentVersion}）</h2>
+        <div id="versions"></div>
+      </div>
+
+      <div class="card">
+        <h2>被哪些问卷使用</h2>
+        <div id="usage"></div>
+      </div>`;
+    document.getElementById("content").innerHTML = html;
+    setupEditForm(q);
+
+    const vBox = document.getElementById("versions");
+    vBox.innerHTML = "";
+    for (const v of [...q.versions].reverse()) {
+      const cur = v.version === q.currentVersion;
+      const div = document.createElement("div");
+      div.className = "qcard";
+      div.innerHTML = `
+        <div class="qhead">
+          <span class="badge ${cur ? "green" : "gray"}">v${v.version}${cur ? " · 当前" : ""}</span>
+          <span class="qtitle">${esc(v.content.title)}</span>
+          <span class="ops">
+            ${!cur && q.mine ? `<button class="small ghost" onclick="restore(${v.version})">恢复此版本</button>` : ""}
+          </span>
+        </div>
+        <div class="muted">${v.basedOn != null ? "基于 v" + v.basedOn + " 修改 · " : "初始版本 · "}${fmtTime(v.createdAt)}${v.content.required ? " · 必答" : ""}</div>
+        <div class="muted">${contentLine(v.content) || "&nbsp;"}</div>`;
+      vBox.appendChild(div);
+    }
+
+    const uBox = document.getElementById("usage");
+    if (!q.usage.length) {
+      uBox.innerHTML = '<div class="muted">还没有问卷使用这道题。可在问卷编辑页通过「从题库选题」加入。</div>';
+    } else {
+      let rows = "";
+      for (const u of q.usage) {
+        rows += `<tr>
+          <td>${esc(u.surveyTitle)}</td>
+          <td>${esc(u.surveyOwner)}</td>
+          <td><span class="badge ${u.surveyStatus === "published" ? "green" : "gray"}">${esc(u.surveyStatusLabel || u.surveyStatus)}</span></td>
+          <td>${u.active ? "v" + u.versionsInUse.join("、v") : '<span class="muted">已从问卷移除</span>'}</td>
+        </tr>`;
+      }
+      uBox.innerHTML = `<table class="list"><thead><tr><th>问卷</th><th>创建者</th><th>状态</th><th>使用版本</th></tr></thead><tbody>${rows}</tbody></table>
+        <div class="muted" style="margin-top:8px;">修改题目会生成新版本；已在收集的问卷不会受影响，可放心修改。</div>`;
+    }
+    renderShareList(q);
+  } catch (e) {
+    if (e.status === 401) location = "/";
+    else showMsg("err", e.message);
+  }
+}
+
+function toggleEdit() {
+  const box = document.getElementById("edit-box");
+  box.style.display = box.style.display === "none" ? "block" : "none";
+}
+function toggleShare() {
+  const box = document.getElementById("share-box");
+  box.style.display = box.style.display === "none" ? "block" : "none";
+}
+
+function renderShareList(q) {
+  const el = document.getElementById("share-list");
+  if (!q.sharedWith.length) { el.innerHTML = '<div class="muted">尚未共享给任何人。</div>'; return; }
+  el.innerHTML = q.sharedWith.map(u =>
+    `<span class="chip">${esc(u.username)}
+      <button class="small danger ghost" onclick="doUnshare('${esc(u.username)}')">✕</button></span>`).join(" ");
+}
+
+function setupEditForm(q) {
+  // 编辑表单基于当前版本内容回填：全部设置可改，题型锁定；保存 = 追加新版本
+  const cur = (q.versions.find(v => v.version === q.currentVersion) || q.versions[0]).content;
+  mountQuestionEditor({
+    initial: cur,
+    lockType: true,
+    submitLabel: "保存为新版本",
+    onSubmit: async (body) => {
+      const r = await api(`/api/bank/questions/${qid}`, { method: "PATCH", body });
+      showMsg("err", `已生成新版本 v${r.version}。`, true);
+      toggleEdit();
+      load();
+    },
+  });
+}
+
+async function restore(version) {
+  if (!confirm(`以 v${version} 的内容创建新版本？现有历史版本都会保留。`)) return;
+  try {
+    const r = await api(`/api/bank/questions/${qid}/restore`, { method: "POST", body: { version } });
+    showMsg("err", `已恢复 v${version} 的内容为新版本 v${r.version}。`, true);
+    load();
+  } catch (e) { showMsg("err", e.message); }
+}
+
+async function doShare() {
+  const username = document.getElementById("s-username").value.trim();
+  if (!username) return;
+  try {
+    await api(`/api/bank/questions/${qid}/share`, { method: "POST", body: { username } });
+    showMsg("err", `已共享给 ${username}。对方在「题库 → 共享给我的」中可见，可加入自己的问卷。`, true);
+    document.getElementById("s-username").value = "";
+    load();
+  } catch (e) { showMsg("err", e.message); }
+}
+
+async function doUnshare(username) {
+  try {
+    await api(`/api/bank/questions/${qid}/unshare`, { method: "POST", body: { username } });
+    load();
+  } catch (e) { showMsg("err", e.message); }
+}
+
+function viewStats() { location = `/qstats.html?id=${qid}`; }
+
+load();
+</script>
+</body>
+</html>

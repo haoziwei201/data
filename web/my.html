@@ -8,7 +8,7 @@
 </head>
 <body>
 <div class="topbar">
-  <span class="brand">简易问卷系统</span>
+  <span class="brand">简易问卷系统 · <a href="/bank.html" style="color:inherit;">题库</a></span>
   <span class="who"><span id="who"></span> · <a href="#" onclick="logout();return false;">退出</a></span>
 </div>
 <div class="container">
@@ -33,8 +33,29 @@
       <tbody id="tbody"></tbody>
     </table>
   </div>
+
+  <div class="card">
+    <h2>我的题库
+      <span class="muted" style="font-weight:400;font-size:13px;">可复用的备选题：在问卷编辑页「从题库选题」加入问卷</span>
+    </h2>
+    <table class="list">
+      <thead><tr><th>题目</th><th>题型</th><th>版本</th><th>共享</th><th>操作</th></tr></thead>
+      <tbody id="bank-tbody"></tbody>
+    </table>
+    <div style="margin-top:12px;">
+      <details id="bank-create">
+        <summary style="cursor:pointer;font-weight:600;">＋ 创建备选题</summary>
+        <div style="margin-top:14px;" id="bank-form"></div>
+      </details>
+    </div>
+    <div class="muted" style="margin-top:10px;">
+      问卷里创建的题目也会自动存入题库；
+      <a href="/bank.html">打开完整题库</a>（含「共享给我的」、版本历史与跨问卷统计入口）。
+    </div>
+  </div>
 </div>
 <script src="/common.js"></script>
+<script src="/bank-form.js"></script>
 <script>
 const who = localStorage.getItem("username");
 if (!localStorage.getItem("token")) location = "/";
@@ -42,6 +63,7 @@ document.getElementById("who").textContent = who || "";
 
 const STATUS_LABEL = { draft: ["草稿", "gray"], published: ["收集中", "green"], paused: ["已暂停", "amber"], closed: ["已关闭", "red"] };
 let SURVEYS = [];
+mountBankForm({ onCreated: loadBank });
 
 async function load() {
   try {
@@ -150,7 +172,46 @@ function copyLink(slug, btn) {
   prompt("问卷填写链接（已尝试复制到剪贴板）：", url);
 }
 
+// ---------------- 我的题库（第二阶段） ----------------
+
+let BANK = [];
+
+async function loadBank() {
+  try {
+    const data = await api("/api/bank/questions?scope=mine");
+    BANK = data.questions;
+    const tb = document.getElementById("bank-tbody");
+    tb.innerHTML = "";
+    if (!BANK.length) {
+      tb.innerHTML = '<tr><td colspan="5" class="muted">题库还是空的：点下方「创建备选题」，或在问卷里建题（会自动入库）。</td></tr>';
+      return;
+    }
+    for (const q of BANK) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td><a href="/question.html?id=${q.id}">${esc(q.title)}</a></td>
+        <td>${TYPE_LABELS[q.type] || q.type}${q.required ? " · 必答" : ""}</td>
+        <td>v${q.currentVersion}（共 ${q.totalVersions} 版）</td>
+        <td class="muted">${q.sharedWithCount ? `已共享 ${q.sharedWithCount} 人` : "未共享"}</td>
+        <td style="white-space:nowrap;">
+          <button class="small ghost" onclick="location='/question.html?id=${q.id}'">详情 / 版本 / 统计</button>
+          <button class="small danger ghost" onclick="delBankQuestion('${q.id}')">移除</button>
+        </td>`;
+      tb.appendChild(tr);
+    }
+  } catch (e) { /* 401 已由 api() 统一跳登录；其余错误不打断问卷列表 */ }
+}
+
+async function delBankQuestion(id) {
+  const q = BANK.find(x => x.id === id);
+  if (!q) return;
+  if (!confirm(`从题库移除「${q.title}」？\n\n题库与共享中将不再显示该题；已放入问卷的题目不受影响。`)) return;
+  try { await api(`/api/bank/questions/${id}`, { method: "DELETE" }); loadBank(); }
+  catch (e) { showMsg("err", e.message); }
+}
+
 load();
+loadBank();
 </script>
 </body>
 </html>

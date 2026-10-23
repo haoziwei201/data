@@ -8,7 +8,7 @@ os.environ["MONGO_URI"] = os.environ.get("TEST_MONGO_URI", "mongodb://localhost:
 os.environ["DB_NAME"] = "survey_test_db"
 os.environ["SECRET"] = "test-secret"
 
-COLLECTIONS = ("users", "surveys", "questions", "responses")
+COLLECTIONS = ("users", "surveys", "questions", "responses", "question_bank")
 
 
 @pytest.fixture(scope="session")

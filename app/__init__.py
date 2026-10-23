@@ -37,8 +37,8 @@ def create_app():
         except PyMongoError:
             return jsonify({"status": "ok", "db": False}), 503
 
-    from app.routes import auth, fill, questions, stats, surveys
-    for bp in (auth.bp, surveys.bp, questions.bp, fill.bp, stats.bp):
+    from app.routes import auth, bank, fill, questions, stats, surveys
+    for bp in (auth.bp, surveys.bp, questions.bp, fill.bp, stats.bp, bank.bp):
         app.register_blueprint(bp)
 
     @app.errorhandler(ApiError)

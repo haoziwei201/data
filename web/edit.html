@@ -42,6 +42,16 @@
     <h2>题目（按顺序填写，可配置跳转）</h2>
     <div id="qlist"></div>
     <button id="btn-add-q" onclick="startAdd()">＋ 添加题目</button>
+    <button id="btn-add-bank" class="ghost" onclick="toggleBankPicker()">⊕ 从题库选题</button>
+  </div>
+
+  <div class="card" id="bank-picker" style="display:none;">
+    <h2>从题库选题（可复用 / 共享的题目）</h2>
+    <div class="muted" style="margin-bottom:10px;">选择「我的题库」或「共享给我的」题目加入本问卷；加入的是内容快照，之后题库更新不会影响本卷，可随时在题目上「升级」。</div>
+    <table class="list">
+      <thead><tr><th>题目</th><th>题型</th><th>版本</th><th>来源</th><th>操作</th></tr></thead>
+      <tbody id="bank-tbody"></tbody>
+    </table>
   </div>
 
   <div class="card" id="import-card">
@@ -154,6 +164,7 @@ function renderStatus() {
 
   const editable = isEditable();
   document.getElementById("btn-add-q").style.display = editable ? "" : "none";
+  document.getElementById("btn-add-bank").style.display = editable ? "" : "none";
   document.getElementById("import-card").style.display = editable ? "block" : "none";
   renderShare();
 }
@@ -292,12 +303,25 @@ function renderList() {
         <button class="small ghost" onclick="startEdit('${q.id}')">编辑</button>
         <button class="small danger" onclick="delQuestion('${q.id}')">删除</button>
       </span>`;
+    const bankOps = q.rootId
+      ? `<span class="ops">
+          <button class="small ghost" onclick="location='/question.html?id=${q.rootId}'">题库详情</button>
+          <select id="ver-${q.id}" style="padding:2px 4px;border:1px solid var(--border);border-radius:4px;font-size:12px;">
+            ${Array.from({length: q.bankTotalVersions || q.bankVersion || 1}, (_, i) => i + 1)
+              .map(v => `<option value="${v}" ${v === q.bankVersion ? "selected" : ""}>v${v}</option>`).join("")}
+          </select>
+          <button class="small ghost" onclick="upgradeQ('${q.id}', '${esc(q.title)}')">切换版本</button>
+        </span>
+        <span class="muted">题库 v${q.bankVersion}/${q.bankCurrentVersion || q.bankVersion}</span>`
+      : `<span class="ops"><button class="small ghost" onclick="saveBankQ('${q.id}', '${esc(q.title)}')">存入题库</button></span>
+         <span class="muted">未入库</span>`;
     div.innerHTML = `
       <div class="qhead">
         <span class="muted">第${q.order}题</span>
         <span class="qtitle">${esc(q.title)}</span>
         ${ops}
       </div>
+      <div class="qmeta">${bankOps}</div>
       ${meta}${body}${jumps}`;
     box.appendChild(div);
   });
@@ -516,6 +540,83 @@ async function saveQuestion() {
     else await api(`/api/surveys/${surveyId}/questions`, { method: "POST", body });
     cancelEdit(); loadAll();
   } catch (e) { showMsg("err", e.message); document.getElementById("qeditor").scrollIntoView(); }
+}
+
+// ---------------- 题库选题（第二阶段） ----------------
+
+async function toggleBankPicker() {
+  const box = document.getElementById("bank-picker");
+  const show = box.style.display === "none";
+  box.style.display = show ? "block" : "none";
+  if (show) await loadBankList();
+}
+
+async function loadBankList() {
+  const tb = document.getElementById("bank-tbody");
+  tb.innerHTML = '<tr><td colspan="5" class="muted">加载中…</td></tr>';
+  try {
+    const [mine, shared] = await Promise.all([
+      api("/api/bank/questions?scope=mine"),
+      api("/api/bank/questions?scope=shared"),
+    ]);
+    const rows = [
+      ...mine.questions.map(q => ({ ...q, from: "我的题库" })),
+      ...shared.questions.map(q => ({ ...q, from: `共享自 ${q.ownerName}` })),
+    ];
+    if (!rows.length) {
+      tb.innerHTML = '<tr><td colspan="5" class="muted">题库为空：先在问卷里创建题目（自动入库），或到「题库」页新建。</td></tr>';
+      return;
+    }
+    tb.innerHTML = "";
+    for (const q of rows) {
+      const inUse = questions.some(x => x.rootId === q.id);
+      const verOptions = Array.from({length: q.currentVersion}, (_, i) => i + 1)
+        .map(v => `<option value="${v}" ${v === q.currentVersion ? "selected" : ""}>v${v}</option>`).join("");
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${esc(q.title)}</td>
+        <td>${TYPE_LABELS[q.type] || q.type}${q.required ? " · 必答" : ""}</td>
+        <td>共 ${q.currentVersion} 版（最新 v${q.currentVersion}）</td>
+        <td class="muted">${esc(q.from)}</td>
+        <td>${inUse
+          ? '<span class="muted">已在问卷中</span>'
+          : `<select id="pick-${q.id}" style="padding:2px 4px;border:1px solid var(--border);border-radius:4px;">${verOptions}</select>
+             <button class="small" onclick="addFromBank('${q.id}')">加入本问卷</button>`}</td>`;
+      tb.appendChild(tr);
+    }
+  } catch (e) { showMsg("err", e.message); }
+}
+
+async function addFromBank(rootId) {
+  const version = Number(document.getElementById("pick-" + rootId)?.value) || undefined;
+  try {
+    await api(`/api/surveys/${surveyId}/questions/from-bank`,
+      { method: "POST", body: { rootId, version } });
+    showMsg("err", "已从题库加入题目（追加到末尾，可上移调整顺序）。", true);
+    await loadAll();
+    await loadBankList();  // 刷新"已在问卷中"状态，避免重复加入报 409
+  } catch (e) { showMsg("err", e.message); }
+}
+
+async function saveBankQ(qid, title) {
+  if (!confirm(`把「${title}」存入题库？\n\n存入后可在其他问卷复用、共享给他人，并支持版本管理与跨问卷统计。`)) return;
+  try {
+    const r = await api(`/api/surveys/${surveyId}/questions/${qid}/save-to-bank`, { method: "POST" });
+    showMsg("err", `已存入题库（v${r.savedVersion}）。`, true);
+    loadAll();
+  } catch (e) { showMsg("err", e.message); }
+}
+
+async function upgradeQ(qid, title) {
+  const version = Number(document.getElementById("ver-" + qid)?.value);
+  if (!version) return;
+  if (!confirm(`把「${title}」切换到题库 v${version}？\n\n本问卷已有答卷时将自动生成分叉，历史答卷与统计不受影响。`)) return;
+  try {
+    const r = await api(`/api/surveys/${surveyId}/questions/${qid}/upgrade`,
+      { method: "POST", body: { version } });
+    showMsg("err", `已切换到 v${r.upgradedTo}。`, true);
+    loadAll();
+  } catch (e) { showMsg("err", e.message); }
 }
 
 document.getElementById("q-type").addEventListener("change", renderEditor);
